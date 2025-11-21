@@ -33,7 +33,7 @@ BASHATE_VERSION ?= 2.1.1
 CONTROLLER_GEN_VERSION ?= v0.18.0
 
 # GOLANGCI_LINT_VERSION defines the golangci-lint version to download from GitHub releases.
-GOLANGCI_LINT_VERSION ?= v2.4.0
+GOLANGCI_LINT_VERSION ?= v2.6.2
 
 # KUSTOMIZE_VERSION defines the kustomize version to download from go modules.
 KUSTOMIZE_VERSION ?= v5@v5.7.1
