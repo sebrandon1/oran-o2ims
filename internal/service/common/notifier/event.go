@@ -95,7 +95,7 @@ func callUrl(ctx context.Context, logger *slog.Logger, client *http.Client, url 
 			case <-ctx.Done():
 				logger.WarnContext(ctx, "context canceled while sending notification",
 					slog.String("notificationID", event.NotificationID.String()), slog.Int("sequenceID", event.SequenceID))
-				break
+				return fmt.Errorf("notification canceled: %w", ctx.Err())
 			case <-time.After(delay):
 				delay *= 2
 				logger.DebugContext(ctx, "retrying notification",

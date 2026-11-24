@@ -12,7 +12,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
@@ -140,5 +142,74 @@ var _ = Describe("processEvent", func() {
 		Expect(result.subscriptionID).To(Equal(subID))
 		Expect(result.notificationID).To(Equal(notifID))
 		Expect(result.sequenceID).To(Equal(42))
+	})
+
+	It("reports completion when the context is canceled before delivery", func(specCtx SpecContext) {
+		ctx, cancel := context.WithCancel(specCtx)
+		cancel()
+		completionCh := make(chan *SubscriptionJobComplete, 1)
+		subID := uuid.New()
+		transport := &failingTransport{}
+
+		event := Notification{NotificationID: uuid.New(), SequenceID: 7, Payload: "test"}
+		processEvent(ctx, slog.Default(), &http.Client{Transport: transport}, completionCh, event, subID, "http://subscriber.invalid/")
+
+		var result *SubscriptionJobComplete
+		Eventually(completionCh).Should(Receive(&result))
+		Expect(result.subscriptionID).To(Equal(subID))
+		Expect(result.sequenceID).To(Equal(7))
+		Expect(transport.attempts.Load()).To(BeNumerically("<=", 1))
+	})
+})
+
+// failingTransport counts requests and fails each one with a 500 response, invoking onRequest (if set) first.
+type failingTransport struct {
+	attempts  atomic.Int32
+	onRequest func()
+}
+
+func (t *failingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	t.attempts.Add(1)
+	if t.onRequest != nil {
+		t.onRequest()
+	}
+	if err := r.Context().Err(); err != nil {
+		return nil, fmt.Errorf("request context done: %w", err)
+	}
+	return &http.Response{StatusCode: http.StatusInternalServerError, Body: http.NoBody, Request: r}, nil
+}
+
+var _ = Describe("callUrl", func() {
+	It("stops retrying when the context is canceled during the retry delay", func(specCtx SpecContext) {
+		ctx, cancel := context.WithCancel(specCtx)
+		DeferCleanup(cancel)
+		transport := &failingTransport{onRequest: cancel}
+
+		start := time.Now()
+		err := callUrl(ctx, slog.Default(), &http.Client{Transport: transport}, "http://subscriber.invalid/", Notification{Payload: "test"})
+
+		Expect(err).To(MatchError(context.Canceled))
+		Expect(transport.attempts.Load()).To(Equal(int32(1)))
+		Expect(time.Since(start)).To(BeNumerically("<", retryDelay))
+	})
+
+	It("returns immediately on a non-retryable error", func(specCtx SpecContext) {
+		start := time.Now()
+		err := callUrl(specCtx, slog.Default(), http.DefaultClient, "http://127.0.0.1:1/bad", Notification{Payload: "test"})
+
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("non retryable error"))
+		Expect(time.Since(start)).To(BeNumerically("<", retryDelay))
+	})
+
+	It("makes a single attempt when the context is already canceled", func(specCtx SpecContext) {
+		ctx, cancel := context.WithCancel(specCtx)
+		cancel()
+		transport := &failingTransport{}
+
+		err := callUrl(ctx, slog.Default(), &http.Client{Transport: transport}, "http://subscriber.invalid/", Notification{Payload: "test"})
+
+		Expect(err).To(MatchError(context.Canceled))
+		Expect(transport.attempts.Load()).To(BeNumerically("<=", 1))
 	})
 })
